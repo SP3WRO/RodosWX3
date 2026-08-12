@@ -88,3 +88,6 @@ Bresser stations always generate a new, random ID number after inserting new bat
 2.  Insert batteries into the external unit on the roof.
 3.  In the station panel, drop down the "Detected nearby" list. The system will display the collected hardware identifiers.
 4.  Select the new ID and save the setting. From this moment on, the hardware is strictly assigned and protected by the logic of the built-in watchdog.
+
+---
+Created using AI for ham radio based on https://github.com/matthias-bs/BresserWeatherSensorReceiver
