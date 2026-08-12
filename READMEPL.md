@@ -88,3 +88,6 @@ Stacje Bresser po włożeniu nowych baterii generują zawsze nowy, losowy numer 
 2.  Włóż baterie do jednostki zewnętrznej na dachu.
 3.  W panelu stacji rozwiń listę "Wykryte w okolicy". System wyświetli zebrane identyfikatory sprzętowe.
 4.  Wybierz nowe ID i zapisz ustawienie. Od tego momentu sprzęt przypisany jest "na sztywno" i chroniony logiką wbudowanego watchdoga.
+
+---
+Stworzone przy użyciu AI dla krótkofalowców na podstawie https://github.com/matthias-bs/BresserWeatherSensorReceiver
