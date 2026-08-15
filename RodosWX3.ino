@@ -1,12 +1,14 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-// RodosWX3.ino
+// BresserWeatherSensorBasicAPRS.ino
 // 
 // Integracja: Bresser + ESP8266/ESP32 + BME280 + CC1101/SX1276/SX1262 -> APRS
 // + Zapis PEŁNEJ konfiguracji w LittleFS przez Panel WWW
 // + Tryb Access Point (Fallback) przy braku WiFi
 // + Watchdog (Restart po 5 min bez ramek radiowych)
-// + Wersja Multiplatformowa (Automatyczne piny I2C)
-// + Obsługa ekranów OLED SSD1306 128x64 (Karuzela informacyjna)
+// + Wersja Multiplatformowa
+// + Dynamiczne definiowanie pinów I2C i OLED przez WWW
+// + Czas wyświetlania (interwał) stron na OLED konfigurowany przez WWW
+// + Czytelny interfejs OLED z dużymi czcionkami i podziałem na strony
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include <Arduino.h>
@@ -37,18 +39,10 @@
 #include "WeatherSensorCfg.h"
 #include "WeatherSensor.h"
 
-// --- KONFIGURACJA PINU RESET DLA WBUDOWANYCH EKRANÓW OLED ---
-#if defined(ARDUINO_HELTEC_WIFI_LORA_32_V2) || defined(ARDUINO_TTGO_LoRa32_V1) || defined(ARDUINO_TTGO_LoRa32_V2)
-  #define OLED_RST 16
-#elif defined(ARDUINO_HELTEC_WIFI_LORA_32_V3) || defined(ARDUINO_HELTEC_WIRELESS_STICK_V3)
-  #define OLED_RST 21
-#else
-  #define OLED_RST -1 // Brak sprzętowego resetu (np. zewnętrzne moduły OLED)
-#endif
-
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST);
+// Przekazujemy -1 jako RST, ponieważ resetem sterujemy ręcznie podczas setupu
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 bool display_available = false;
 unsigned long last_display_time = 0;
 int display_page = 0;
@@ -67,10 +61,19 @@ struct AppConfig {
     bool use_kiss = false;
     String server_host = "rotate.aprs2.net";
     uint16_t server_port = 14580;
+    
+    // Konfiguracja pinów sprzętowych (-1 oznacza auto/brak)
+    int i2c_sda = -1;
+    int i2c_scl = -1;
+    int oled_rst = -1;
+    int oled_pwr = -1;
+
+    // Czas zmiany ekranu (w sekundach)
+    int oled_interval = 4;
 } config;
 
 void saveConfig() {
-    File f = LittleFS.open("/config_v2.txt", "w");
+    File f = LittleFS.open("/config_v4.txt", "w");
     if (f) {
         f.println(String(config.sensor_id, HEX));
         f.println(config.wifi_ssid);
@@ -84,14 +87,21 @@ void saveConfig() {
         f.println(config.use_kiss ? "1" : "0");
         f.println(config.server_host);
         f.println(String(config.server_port));
+        
+        f.println(String(config.i2c_sda));
+        f.println(String(config.i2c_scl));
+        f.println(String(config.oled_rst));
+        f.println(String(config.oled_pwr));
+        f.println(String(config.oled_interval));
+        
         f.close();
         Serial.println(F("[SYSTEM] Konfiguracja zapisana."));
     }
 }
 
 void loadConfig() {
-    if (LittleFS.exists("/config_v2.txt")) {
-        File f = LittleFS.open("/config_v2.txt", "r");
+    if (LittleFS.exists("/config_v4.txt")) {
+        File f = LittleFS.open("/config_v4.txt", "r");
         if (f) {
             config.sensor_id = strtoul(f.readStringUntil('\n').c_str(), NULL, 16);
             config.wifi_ssid = f.readStringUntil('\n'); config.wifi_ssid.trim();
@@ -105,11 +115,18 @@ void loadConfig() {
             config.use_kiss = (f.readStringUntil('\n').toInt() == 1);
             config.server_host = f.readStringUntil('\n'); config.server_host.trim();
             config.server_port = f.readStringUntil('\n').toInt();
+            
+            String s_sda = f.readStringUntil('\n'); if(s_sda.length() > 0) config.i2c_sda = s_sda.toInt();
+            String s_scl = f.readStringUntil('\n'); if(s_scl.length() > 0) config.i2c_scl = s_scl.toInt();
+            String s_rst = f.readStringUntil('\n'); if(s_rst.length() > 0) config.oled_rst = s_rst.toInt();
+            String s_pwr = f.readStringUntil('\n'); if(s_pwr.length() > 0) config.oled_pwr = s_pwr.toInt();
+            String s_int = f.readStringUntil('\n'); if(s_int.length() > 0) config.oled_interval = s_int.toInt();
+            
             f.close();
             Serial.println(F("[SYSTEM] Wczytano konfiguracje z pamieci."));
         }
     } else {
-        Serial.println(F("[SYSTEM] Brak pliku konfiguracyjnego. Ladowanie domyslnych."));
+        Serial.println(F("[SYSTEM] Brak pliku konfiguracyjnego v4. Ladowanie domyslnych."));
         saveConfig();
     }
 }
@@ -117,7 +134,7 @@ void loadConfig() {
 #define FEND  0xC0
 #define FESC  0xDB
 #define TFEND 0xDC
-#define TFESC 0xDD
+#define TFESC  0xDD
 
 WeatherSensor ws;
 Adafruit_BME280 bme;
@@ -178,12 +195,12 @@ void updateDisplay() {
     if (!display_available) return;
     
     display.clearDisplay();
-    display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    display.setCursor(0, 0);
 
     switch(display_page) {
         case 0:
+            display.setTextSize(1);
+            display.setCursor(0, 0);
             display.println(F("--- RodosWX3 ---"));
             display.println("");
             display.printf("WiFi: %s\n", in_ap_mode ? "Tryb AP (Setup)" : (WiFi.status() == WL_CONNECTED ? "Polaczono" : "Brak"));
@@ -197,35 +214,67 @@ void updateDisplay() {
             break;
             
         case 1:
-            display.println(F("--- POGODA ---"));
-            display.println("");
-            display.printf("Temp: %.1f C\n", current_wx.temp_c);
-            display.printf("Wilgotnosc: %d %%\n", current_wx.humidity);
+            display.setTextSize(1);
+            display.setCursor(0, 0);
+            display.println(F("--- TEMPERATURA ---"));
+            display.setTextSize(3);
+            display.setCursor(0, 25);
+            display.printf("%.1f C", current_wx.temp_c);
+            break;
+            
+        case 2:
+            display.setTextSize(1);
+            display.setCursor(0, 0);
+            display.println(F("--- WILGOTNOSC ---"));
+            display.setTextSize(3);
+            display.setCursor(0, 25);
+            display.printf("%d %%", current_wx.humidity);
+            break;
+            
+        case 3:
+            display.setTextSize(1);
+            display.setCursor(0, 0);
+            display.println(F("--- CISNIENIE ---"));
+            display.setTextSize(2);
+            display.setCursor(0, 25);
             if (baro_hpa > 0) {
-                display.printf("Cisnienie: %.1f hPa\n", baro_hpa / 10.0);
+                display.printf("%.1f hPa", baro_hpa / 10.0);
             } else {
-                display.println(F("Cisnienie: -- hPa"));
+                display.println(F("-- hPa"));
             }
             break;
             
-        case 2: {
+        case 4: {
+            display.setTextSize(1);
+            display.setCursor(0, 0);
             display.println(F("--- WIATR ---"));
-            display.println("");
-            display.printf("Kierunek: %.0f deg\n", current_wx.wind_dir);
             float avg_w = (wind_sample_count > 0) ? (wind_speed_sum / wind_sample_count) : 0.0;
-            display.printf("Predkosc: %.1f m/s\n", avg_w);
-            display.printf("Porywy: %.1f m/s\n", wind_gust_max_period);
+            display.setTextSize(2);
+            display.setCursor(0, 20);
+            display.printf("%.1f m/s\n", avg_w);
+            display.printf("Kier: %.0f", current_wx.wind_dir);
             break;
         }
             
-        case 3:
-            display.println(F("--- OPADY I SLONCE ---"));
-            display.println("");
-            display.printf("Opad 1h: %.1f mm\n", calc_r1h * 0.254);
-            display.printf("Opad 24h: %.1f mm\n", calc_p24h * 0.254);
-            display.printf("Slonce: %d W/m2\n", calc_lum);
+        case 5:
+            display.setTextSize(1);
+            display.setCursor(0, 0);
+            display.println(F("--- OPAD ---"));
+            display.setTextSize(2);
+            display.setCursor(0, 20);
+            display.printf("1h: %.1f mm\n", calc_r1h * 0.254);
+            display.printf("24h: %.1f mm", calc_p24h * 0.254);
+            break;
+            
+        case 6:
+            display.setTextSize(1);
+            display.setCursor(0, 0);
+            display.println(F("--- SLONCE ---"));
+            display.setTextSize(2);
+            display.setCursor(0, 20);
+            display.printf("%d W/m2\n", calc_lum);
             if (!isnan(current_wx.uv_index)) {
-                display.printf("Indeks UV: %.1f\n", current_wx.uv_index);
+                display.printf("UV: %.1f", current_wx.uv_index);
             }
             break;
     }
@@ -304,8 +353,22 @@ const char index_html[] PROGMEM = R"rawliteral(
           <div class="cfg-group"><label>Serwer/IP:</label><input type="text" id="cfg_host"></div>
           <div class="cfg-group"><label>Port:</label><input type="number" id="cfg_port"></div>
       </div>
+    </div>
+
+    <!-- KONFIGURACJA SPRZĘTU -->
+    <div class="card" style="grid-column: 1 / -1;">
+      <h3>Konfiguracja Sprzętowa (Piny I2C / OLED)</h3>
+      <p style="font-size: 0.9rem; color: #aaa; margin-bottom: 15px;">Wpisz -1, aby użyć domyślnych pinów dla wybranej płytki.</p>
+      <div class="cfg-grid">
+          <div class="cfg-group"><label>I2C SDA (np. 17):</label><input type="number" id="cfg_sda"></div>
+          <div class="cfg-group"><label>I2C SCL (np. 18):</label><input type="number" id="cfg_scl"></div>
+          <div class="cfg-group"><label>OLED Reset (RST):</label><input type="number" id="cfg_rst"></div>
+          <div class="cfg-group"><label>OLED Zasilanie (Vext):</label><input type="number" id="cfg_pwr"></div>
+          <div class="cfg-group"><label>Czas ekranu (sekundy):</label><input type="number" id="cfg_oled_int" min="1"></div>
+      </div>
       <button onclick="saveFullConfig()" style="margin-top: 15px;">💾 ZAPISZ KONFIGURACJĘ I ZRESTARTUJ</button>
     </div>
+
   </div>
   
   <div class="status">
@@ -355,6 +418,13 @@ setInterval(function() {
         document.getElementById('cfg_mode').value = data.cfg_mode;
         document.getElementById('cfg_host').value = data.cfg_host;
         document.getElementById('cfg_port').value = data.cfg_port;
+        
+        document.getElementById('cfg_sda').value = data.cfg_sda;
+        document.getElementById('cfg_scl').value = data.cfg_scl;
+        document.getElementById('cfg_rst').value = data.cfg_rst;
+        document.getElementById('cfg_pwr').value = data.cfg_pwr;
+        document.getElementById('cfg_oled_int').value = data.cfg_oled_int;
+        
         configLoaded = true;
     }
     
@@ -390,6 +460,12 @@ function saveFullConfig() {
     params.append('mode', document.getElementById('cfg_mode').value);
     params.append('host', document.getElementById('cfg_host').value);
     params.append('port', document.getElementById('cfg_port').value);
+    
+    params.append('sda', document.getElementById('cfg_sda').value);
+    params.append('scl', document.getElementById('cfg_scl').value);
+    params.append('rst', document.getElementById('cfg_rst').value);
+    params.append('pwr', document.getElementById('cfg_pwr').value);
+    params.append('oled_int', document.getElementById('cfg_oled_int').value);
     
     fetch('/api/savecfg?' + params.toString()).then(r => {
         alert('Zapisano. Stacja się restartuje.');
@@ -437,6 +513,12 @@ String get_sensor_json() {
   json += "\"cfg_mode\":" + String(config.use_kiss ? 1 : 0) + ",";
   json += "\"cfg_host\":\"" + config.server_host + "\",";
   json += "\"cfg_port\":" + String(config.server_port) + ",";
+  
+  json += "\"cfg_sda\":" + String(config.i2c_sda) + ",";
+  json += "\"cfg_scl\":" + String(config.i2c_scl) + ",";
+  json += "\"cfg_rst\":" + String(config.oled_rst) + ",";
+  json += "\"cfg_pwr\":" + String(config.oled_pwr) + ",";
+  json += "\"cfg_oled_int\":" + String(config.oled_interval) + ",";
   
   json += "\"seen_ids\":[";
   bool first = true;
@@ -589,25 +671,75 @@ void send_aprs(String custom_comment = "") {
 void setup() {
   delay(3000);
   Serial.begin(115200);
-  Serial.println(F("\n\n--- START RodosWX_3 (Multiplatform + OLED) ---"));
+  Serial.println(F("\n\n--- START RodosWX_3 ---"));
 
-  // Inicjalizacja I2C
-  #if defined(ESP8266)
-      Wire.begin(2, 5);
-  #elif defined(ESP32)
-      Wire.begin();
+  // System plików (Musi być wczytany przed użyciem zmiennych konfiguracyjnych)
+  #if defined(ESP32)
+      if(!LittleFS.begin(true)) Serial.println(F("LittleFS Mount Failed"));
+  #else
+      LittleFS.begin();
   #endif
   
-  Wire.setClock(100000);
+  loadConfig();
 
-  // Inicjalizacja ekranu OLED (współdzieli szyne I2C)
-  if(OLED_RST > -1) {
-      pinMode(OLED_RST, OUTPUT);
-      digitalWrite(OLED_RST, LOW);
-      delay(20);
-      digitalWrite(OLED_RST, HIGH);
+  // --- USTALENIE PINÓW (Ręczne lub domyślne fallback) ---
+  int sda = config.i2c_sda;
+  int scl = config.i2c_scl;
+  int rst = config.oled_rst;
+  int pwr = config.oled_pwr;
+
+  // Domyślne wartości zapasowe, jeśli użytkownik wpisał -1 (auto)
+  if (pwr == -1) {
+      #if defined(ARDUINO_HELTEC_WIFI_LORA_32_V3) || defined(ARDUINO_HELTEC_VISION_MASTER_T190) || defined(ARDUINO_HELTEC_WIRELESS_STICK_V3)
+          pwr = 36; // Vext dla Heltec V3
+      #endif
   }
   
+  if (rst == -1) {
+      #if defined(ARDUINO_HELTEC_WIFI_LORA_32_V2) || defined(ARDUINO_TTGO_LoRa32_V1) || defined(ARDUINO_TTGO_LoRa32_V2)
+          rst = 16;
+      #elif defined(ARDUINO_HELTEC_WIFI_LORA_32_V3) || defined(ARDUINO_HELTEC_WIRELESS_STICK_V3)
+          rst = 21;
+      #endif
+  }
+  
+  if (sda == -1 || scl == -1) {
+      #if defined(ARDUINO_HELTEC_WIFI_LORA_32_V3) || defined(ARDUINO_HELTEC_VISION_MASTER_T190) || defined(ARDUINO_HELTEC_WIRELESS_STICK_V3)
+          sda = 17; scl = 18;
+      #elif defined(ESP8266)
+          sda = 2; scl = 5;
+      #endif
+  }
+
+  // --- ZASILANIE OLEDA ---
+  if (pwr >= 0) {
+      pinMode(pwr, OUTPUT);
+      digitalWrite(pwr, LOW); // LOW załącza zasilanie Vext w Heltec
+      delay(50);
+  }
+
+  // --- MAGISTRALA I2C ---
+  if (sda >= 0 && scl >= 0) {
+      Wire.begin(sda, scl);
+  } else {
+      #if defined(ESP8266)
+          Wire.begin(2, 5); 
+      #else
+          Wire.begin(); 
+      #endif
+  }
+  Wire.setClock(100000);
+
+  // --- RESET OLEDA ---
+  if (rst >= 0) {
+      pinMode(rst, OUTPUT);
+      digitalWrite(rst, LOW);
+      delay(20);
+      digitalWrite(rst, HIGH);
+      delay(20);
+  }
+  
+  // --- START EKRANU ---
   if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
       Serial.println(F("OLED: NIE WYKRYTO EKRANU SSD1306"));
   } else {
@@ -621,6 +753,7 @@ void setup() {
       display.display();
   }
   
+  // --- START BME280 ---
   if (bme.begin(0x76)) {
       Serial.println(F("BME280/BMP280: OK"));
       bme_available = true;
@@ -628,14 +761,6 @@ void setup() {
       Serial.println(F("BME280/BMP280: NIE WYKRYTO"));
   }
 
-  // System plików
-  #if defined(ESP32)
-      if(!LittleFS.begin(true)) Serial.println(F("LittleFS Mount Failed"));
-  #else
-      LittleFS.begin();
-  #endif
-  
-  loadConfig();
   ws.begin();
 
   Serial.println(F("Laczenie WiFi..."));
@@ -693,6 +818,12 @@ void setup() {
     if(request->hasParam("host")) config.server_host = request->getParam("host")->value();
     if(request->hasParam("port")) config.server_port = request->getParam("port")->value().toInt();
     
+    if(request->hasParam("sda")) config.i2c_sda = request->getParam("sda")->value().toInt();
+    if(request->hasParam("scl")) config.i2c_scl = request->getParam("scl")->value().toInt();
+    if(request->hasParam("rst")) config.oled_rst = request->getParam("rst")->value().toInt();
+    if(request->hasParam("pwr")) config.oled_pwr = request->getParam("pwr")->value().toInt();
+    if(request->hasParam("oled_int")) config.oled_interval = request->getParam("oled_int")->value().toInt();
+    
     saveConfig();
     request->send(200, "text/plain", "OK");
     shouldReboot = true;
@@ -708,10 +839,11 @@ void loop() {
       ESP.restart();
   }
 
-  // --- ZMIANA EKRANU CO 4 SEKUNDY ---
-  if (millis() - last_display_time > 4000) {
+  // --- ZMIANA EKRANU WYZNACZANA PRZEZ INTERWAŁ UŻYTKOWNIKA ---
+  unsigned long d_interval = (config.oled_interval > 0 ? config.oled_interval : 4) * 1000UL;
+  if (millis() - last_display_time > d_interval) {
       display_page++;
-      if (display_page > 3) display_page = 0;
+      if (display_page > 6) display_page = 0;
       updateDisplay();
       last_display_time = millis();
   }
