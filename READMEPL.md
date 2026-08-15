@@ -3,7 +3,7 @@
 **RodosWX3** to zaawansowane, wszechstronne oprogramowanie dla stacji pogodowych, integrujące zewnętrzne czujniki radiowe firmy Bresser (5-in-1, 6-in-1, 7-in-1) z amatorską siecią APRS. Projekt został stworzony z myślą o maksymalnej niezawodności, bezprzewodowej konfiguracji (Plug & Play) i wygodzie użytkowania.
 
 Program jest multiplatformowy – automatycznie dostosowuje się do mikrokontrolerów z rodziny **ESP8266** oraz **ESP32** (w tym płytek zintegrowanych takich jak Heltec V2/V3, TTGO LoRa32, LilyGo).
-
+![Aktywny program](1.jpg)
 ---
 
 ## ✨ Główne Funkcje
