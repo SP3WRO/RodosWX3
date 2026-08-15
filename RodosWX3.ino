@@ -1,5 +1,5 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-// BresserWeatherSensorBasicAPRS.ino
+// RodosWX3.ino
 // 
 // Integracja: Bresser + ESP8266/ESP32 + BME280 + CC1101/SX1276/SX1262 -> APRS
 // + Zapis PEŁNEJ konfiguracji w LittleFS przez Panel WWW
