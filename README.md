@@ -4,6 +4,7 @@
 
 The program is multi-platform – it automatically adapts to microcontrollers from the **ESP8266** and **ESP32** families (including integrated boards such as Heltec V2/V3, TTGO LoRa32, and LilyGo).
 
+![Activated program](1.jpg)
 ---
 
 ## ✨ Main Features
